@@ -54,31 +54,6 @@ class UTCTime:
         cls.mo += 1
 
 
-
-
-class DeviceType(Enum):
-    UNRECOGNIZED = 0
-    HOST_DEVICE = 1
-    OTHER_SERVER = 2
-    HOME_SERVER = 3
-    HOME_ROUTER = 4    
-
-class DevicePrivilege(Enum):
-    UNRECOGNIZED = 0
-    GUEST = 1
-    USER = 2
-    ROOT = 3
-
-class Device:
-    def __init__(self, deviceType: DeviceType, deviceID:int, deviceIP: ipaddress.IPv4Address, devicePrivilege: DevicePrivilege = 0) -> None:
-        self.type:DeviceType = deviceType
-        self.did: int = deviceID
-        self.name:str = f"{DeviceType(deviceType).name} {self.did}"
-        self.ipv4:ipaddress.IPv4Address = deviceIP
-        self.privilege:DevicePrivilege = devicePrivilege 
-
-
-
 class LogType(Enum):
     ACCESS = 0
     ERROR = 1
@@ -97,7 +72,8 @@ class LogAction:
     actionType:LogType = LogType(0)
     actionStatus:LogStatus = LogStatus(0)
     fromDevice:Device = None
-    toDevice:Device = None
+    toDevice:Server = None
+    requiresResponse:bool = False
 
     @classmethod
     def GetLog(cls) -> str:
@@ -105,11 +81,12 @@ class LogAction:
         return f"[{UTCTime.GetTime()}] {cls.actionType.name} {cls.actionStatus.name} | {cls.toDevice.name} - {cls.fromDevice.name}"
 
     @classmethod
-    def SetLog(cls, typeID:int, statusID:int, fDevice:Device, tDevice:Device):
+    def SetLog(cls, typeID:int, statusID:int, fDevice:Device, tDevice:Device, responseRequired:bool = False):
         cls.actionType = LogType(typeID)
         cls.actionStatus = LogStatus(statusID)
         cls.fromDevice = fDevice
         cls.toDevice = tDevice
+        cls.requiresResponse = responseRequired
 
     @classmethod
     def __Elaborate() -> str:
@@ -138,27 +115,11 @@ class LogActionManager:
             currentActions +=1
             UTCTime.Increment()
 
-    
-    @classmethod
-    def __AccessAction(cls):
-        pass
-
-    @classmethod
-    def __ErrorAction(cls):
-        pass
-
-    @classmethod
-    def __SecurityAction(cls):
-        pass
-
-    @classmethod
-    def __SystemAction(cls):
-        pass
 
 class ServerLogger:
     _logPath:Path = (Path.cwd() / "logs/").resolve()
 
-    def Init(self, networkDevices, isAnomolous:bool):
+    def Init(self, networkDevices, isAnomolous:bool) -> bool:
         ## Create a log file with a name + time created
         self._logFileName:str = f"{UTCTime.GetTime(True)}.txt"
         self._logID = self._logPath / self._logFileName
@@ -169,10 +130,39 @@ class ServerLogger:
         ## Log stuff and increment time so it looks real
 
         ## Save the log and check
-        pass
+        return 1
     
     def SLogEm(self) -> None:
         pass
+
+
+
+class DeviceType(Enum):
+    UNRECOGNIZED = 0
+    HOST_DEVICE = 1
+    OTHER_SERVER = 2
+    HOME_SERVER = 3
+    HOME_ROUTER = 4    
+
+class DevicePrivilege(Enum):
+    UNRECOGNIZED = 0
+    GUEST = 1
+    USER = 2
+    ROOT = 3
+
+class Device:
+    def __init__(self, deviceType: DeviceType, deviceID:int, deviceIP: ipaddress.IPv4Address, devicePrivilege: DevicePrivilege = 0) -> None:
+        self.type:DeviceType = deviceType
+        self.did: int = deviceID
+        self.name:str = f"{DeviceType(deviceType).name} {self.did}"
+        self.ipv4:ipaddress.IPv4Address = deviceIP
+        self.privilege:DevicePrivilege = devicePrivilege 
+
+class Server(Device):
+    def __init__(self, logger:ServerLogger, serverIP: ipaddress.IPv4Address, serverID:int = 0, serverPrivilege: int = 2) -> None:
+        self.logger:ServerLogger = logger
+        super().__init__(DeviceType.HOME_SERVER, serverID, serverIP, serverPrivilege)
+
 
 
 ##TODO: Right now it just creates a list of devices with no functionality
@@ -180,7 +170,7 @@ class NetworkManager:
     _networkIp = ipaddress.ip_network('144.44.8.0/24')
     _possibleHosts = tuple(_networkIp.hosts())
 
-    _loggedDevices = [] #First device is home router, followed by the home server, then local hosts and others come last
+    _loggedDevices = [] #First device is home server, followed by the home router, then DC hosts followed by others 
     _logger = ServerLogger()
 
     def __init__(self, isAnomolous:bool = False) -> None:
@@ -194,13 +184,16 @@ class NetworkManager:
 
     ##TODO: Add the sussy
     def __CreateDevices(self, numLocalHosts:int = 3) -> None:
-        self._loggedDevices.append(Device(DeviceType.HOME_ROUTER, 0, '144.44.8.1', 3))
-        self._loggedDevices.append(Device(DeviceType.HOME_SERVER, 1, '144.44.8.2', 3))
+        self._loggedDevices.append(self.__CreateServer())
+        self._loggedDevices.append(Device(DeviceType.HOME_ROUTER, 1, '144.44.8.1', 3))
 
         initializedHosts = 0
         while(initializedHosts < numLocalHosts):
             self._loggedDevices.append(self.__CreateDevice((initializedHosts+2), random.choice(self._possibleHosts)))
             initializedHosts +=1
+
+    def __CreateServer(self) -> Server:
+        return Server(self._logger, '144.44.8.2')
 
     def __CreateDevice(self, did: int, dip:ipaddress.IPv4Address):
         return Device(DeviceType.HOST_DEVICE, did, dip, 1)

@@ -1,9 +1,8 @@
-import networkEmulator
+import SLogEm
 
 
 
 if __name__ == "__main__":
     print("Running")
-    netManager = networkEmulator.NetworkManager()
-    
-    #netManager.DisplayDevices()
+    netman = SLogEm.NetworkManager()
+    netman.SLogEm()
