@@ -70,15 +70,42 @@ class LogStatus(Enum):
     FATAL   = 4
 
 class LogTree:
-    topLevelTransitions:list[list[str]] = [["a1"],["a2"],["a3"],["a4"],
-                                ["a5-12", "a14-16", "a20-22"],            #DEBUG_CHECK_PASS
-                                ["a0"], ["a30"], ["a4"], ["a4"],          #FC_SUCCESS
-                                ["a4"], ["a4"], ["a4"], ["a13", "a24"],   #SYNC_START
-                                ["a4"], ["a4"], ["a4"], ["a17", "a18"],   #PROG_STARTED 
-                                ["a4"], ["a17", "a25-29"], ["a4-6"],      #REBOOT_4_CHANGES
-                                ["a4"], ["a4"], ["a4"], ["a6"], ["a6"],   #SYNC_FAILED
-                                ["a6"], ["a27"], ["a6"], ["a6"], ["a30"], #DRIVER_FAULT
+    startPositions: list[str] = ["a0"]
+    tl_sys_transitions:list[list[str]] = [["a1"],["a2"],["a3"],["a4"],
+                                ["a5-12", "a14-16", "a20-22", "b0"],            # DEBUG_CHECK_PASS
+                                ["a0"], ["a30"], ["a4"], ["a4"],                # FC_SUCCESS
+                                ["a4"], ["a4"], ["a4"], ["a13", "a24"],         # SYNC_START
+                                ["a4"], ["a4"], ["a4"], ["a17", "a18"],         # PROG_STARTED 
+                                ["a4"], ["a17", "a25-29"], ["a4-6"],            # REBOOT_4_CHANGES
+                                ["a4"], ["a4"], ["a4"], ["a6"], ["a6"],         # SYNC_FAILED
+                                ["a6"], ["a27"], ["a6"], ["a6"], ["a30"],       # DRIVER_FAULT
                                 ["a0"]]
+
+    tl_acc_transitions:list[list[str]] = [["b1", "b8", "b11-13"],           # CONNECTION_ATTEMPT
+                                              ["a4", "b2-3", "b6", "c1", "c4"], # CONNECTION_ALLOWED
+                                              ["a4", "b0"],                     # CONNECTION_DROPPED
+                                              ["b4", "b9", "c3-4"],             # REQ_ENCRYPTED_DISK_ACC
+                                              ["a4", "b2", "b5-6", "c4"],       # ENCRYPTED_DISK_ACC_ACC
+                                              ["a4", "b2","b6"],                # ENCRYPTED_DISK_ACCESS
+                                              ["b7", "b10-13"],                 # FT_REQ
+                                              ["a4", "b2", "b6"],               # FT_ALLOWED
+                                              ["b11", "b13", "c0"],             # CONNECTION_INVALID
+                                              ["b11-12", "c0-1", "c3"],         # ENCRYPTED_DISC_ACCESS_FAILED
+                                              ["b11-12", "c0", "c3"],           # FT_DENIED
+                                              ["b2", "c0-1", "c3"],             # CONNECTION_FAILED
+                                              ["b2", "c0-1", "c3"],             # REQUEST_TIMEOUT
+                                              ["b2"]]                          # BAD_HANDSHAKE
+
+
+    tl_sec_transitions:list[list[str]] = [["a4"],                           # BAD_PERMISSIONS
+                                              ["a4"],                           # ACCESS_VIOLATION
+                                              ["a4"],                           # AV_FLAGGED
+                                              ["a4"],                           # ACCESS_LOCKOUT
+                                              ["a4"]]                          # ROOT_ACCESS_GRANTED
+
+    xtraAccInfoTransitions:list[list[str]] = []
+    xtraSysInfoTransitions:list[list[str]] = []
+    xtraSecInfoTransitions:list[list[str]] = []
 
 class SysMsg(Enum):                                                 #a
     #Debug / Info
@@ -125,7 +152,7 @@ class AccMsg(Enum):                                                             
     ENCRYPTED_DISK_ACC_ACC      = "disk access accepted"
     ENCRYPTED_DISK_ACCESS       = "encrypted storage accessed"
     FT_REQ                      = "file transfer request"                               #6
-    FT_ALLOWED                  = "file transfer allowed...\ncomplete"
+    FT_ALLOWED                  = "file transfer allowed... complete"
     #Warnings
     CONNECTION_INVALID          = "connection denied invalid credentials"
     ENCRYPTED_DISK_ACCESS_FAILED= "disk access denied"                                  #9
@@ -185,7 +212,6 @@ class Files(Enum):                              #z
 
 #? Take context from the LogAction, transcribing it to logs and saving when done
 #TODO: Create a
-
 class NetLogger:
     def __init__(self):
         self._logPath:Path = (Path.cwd() / "logs/").resolve()
@@ -211,55 +237,126 @@ class NetLogger:
             self._lType = logType
             self._tDevice = toDevice
             self._DoReqResponse = reqResponse
-
+            
     #? Derives the appropriate context of the log line based on the log type and status
-    def SLogIt(self):# Just a state machine
+    def SLogIt(self, maxLogs:int):# Just a state machine
+        logSequence:list[tuple[LogType, int]] = self._DetSLogSequence(maxLogs)
         log:str = ""
-        match self._lType:
-            case LogType.ACCESS: log = self._SLogAccess()
-            case LogType.SECURITY: log = self._SLogSecurity()
-            case LogType.SYSTEM: log = self._SLogSystem()
 
-        print(log, file=self._logFile)
-        UTCTime.Increment()
+        for logTuple in logSequence:
+            lType, lID = logTuple
+            log = self._TranslateToLog(lType.name, lID)
+            print(log, file=self._logFile)
+            UTCTime.Increment()
 
-    def _SLogAccess(self) -> str: 
-        message:str = f"{self._fDevice.ipv4} to {self._tDevice.name} {self._tDevice.ipv4}"
-        additionalInfo:str = ""
+    #TODO: FIX SEQUENCING IT DONT WORK
+    #TODO: Add context and some rules to make it look more natural
+    #TODO: Add anomolous ruleset
+    #TODO: Test and if it sucks go find some logs
+    #? Should return a sequence of tuples(type, log id) which allows messages to be printed
+    def _DetSLogSequence(self, maxSLogs:int) -> list[tuple[LogType, int]]:
+        start:str = random.choice(LogTree.startPositions)
+        sequence:list[tuple[LogType, int]] = [[self._PullLogType(start), int(start[1:])]] 
+        logCount:int = 0
 
-        match self._lStatus:
-            case LogStatus.WARN:    additionalInfo = AccMsg.FT_DENIED.value
-            case LogStatus.ERROR:   additionalInfo = AccMsg.CONNECTION_FAILED.value
-            case LogStatus.FATAL:   additionalInfo = AccMsg.ENCRYPTED_DISK_ACCESS_FAILED.value
-            case _:                 additionalInfo = AccMsg.CONNECTION_VALID.value
-        return f"[{UTCTime.GetTime()}] {LogType.ACCESS.name} {self._lStatus.name} | {message} {additionalInfo}"
+        while logCount < maxSLogs:
+            nextLog:str = self._GetNextLog(sequence[logCount])
+            sequence.append((self._PullLogType(nextLog), int(nextLog[1:])))
+            logCount +=1
+        return sequence
 
-    def _SLogSecurity(self) -> str: 
-        message:str = f"{self._fDevice.ipv4} to {self._tDevice.name} {self._tDevice.ipv4}"
-        additionalInfo:str = ""
-    
-        match self._lStatus:
-            case LogStatus.WARN:  additionalInfo = SecMsg.ROOT_ACCESS_GRANTED.value
-            case LogStatus.ERROR: additionalInfo = SecMsg.BAD_PERMISSIONS.value
-            case LogStatus.FATAL: additionalInfo = SecMsg.ACCESS_LOCKOUT.value
-            case _:               additionalInfo = SecMsg.BAD_PERMISSIONS.value
-        return f"[{UTCTime.GetTime()}] {LogType.SECURITY.name} {self._lStatus.name} | {message} {additionalInfo}"
 
-    def _SLogSystem(self) ->str:
-        message:str = f"{self._fDevice.name} {self._fDevice.ipv4}"
-        additionalInfo:str = ""
-        match self._lStatus:
-            case LogStatus.DEBUG: additionalInfo = f"{SysMsg.LOADING_DATA.value}"
-            case LogStatus.INFO:  additionalInfo = f"{SysMsg.FT_SUCCESS.value}"
-            case LogStatus.WARN:  additionalInfo = f"{SysMsg.MEM_ACCESS_VIOLATION.value}"
-            case LogStatus.ERROR: additionalInfo = f"{SysMsg.OUT_OF_MEM.value}"
-            case LogStatus.FATAL: additionalInfo = f"{SysMsg.DRIVER_FAULT.value}"
+    def _TranslateToLog(self, logType:LogType, logID:int) -> str:
+        baseMsg:str = self._GetLogBase(logType, logID)
+        return f"{UTCTime.GetTime()} {logType} {LogStatus.WARN.name} | {baseMsg}"
 
-        return f"[{UTCTime.GetTime()}] {LogType.SYSTEM.name} {self._lStatus.name} | {message} {additionalInfo}"
+
+    def _GetLogBase(self, logType:LogType, logID:int) -> str:
+        match logType:
+            case LogType.ACCESS.name: return list(AccMsg)[logID].value
+            case LogType.SYSTEM.name: return list(SysMsg)[logID].value
+            case LogType.SECURITY.name: return list(SecMsg)[logID].value
+
+
+    def _GetNextLog(self, currentLog:tuple[LogType, int]) -> str:
+        valid_transitions:list[str] = []
+        top_level_transitions:list[str] = []
+
+        match currentLog[0]:
+            case LogType.ACCESS: top_level_transitions = LogTree.tl_acc_transitions[currentLog[1]] 
+            case LogType.SYSTEM: top_level_transitions = LogTree.tl_sys_transitions[currentLog[1]]            
+            case LogType.SECURITY: top_level_transitions = LogTree.tl_sec_transitions[currentLog[1]]
+
+        for transition_node in top_level_transitions:
+            valid_transitions.extend(self._ExtractRange(transition_node))
+
+        return random.choice(valid_transitions)
+
+
+    def _ExtractRange(self, range:str) -> list[str]:
+        if len(range) <= 3: return [range]    #if there's only 1 option
+
+        valid_transitions:list[str] = []
+        top_level_transition:chr = range[0]
+
+        code_range_min:int = -1
+        code_range_max:int = -1
+        code_range_val_as_str:str = ""
+
+        for character in range[1:]:
+            if character.isdigit(): code_range_val_as_str += character
+            else:
+                code_range_min = int(code_range_val_as_str)
+                code_range_val_as_str = ""
+
+        if (len(code_range_val_as_str) > 0): code_range_max = int(code_range_val_as_str)
+
+        current_code_val:int = code_range_min
+        while (current_code_val <= code_range_max):
+            valid_transitions.append(f"{top_level_transition}{current_code_val}")
+            current_code_val +=1
+
+        return valid_transitions
+
+    def _PullLogType(self, idStr:str) -> LogType:
+        match idStr[0]:
+            case 'a': return LogType.SYSTEM
+            case 'b': return LogType.ACCESS
+            case 'c': return LogType.SECURITY
+
+    #? If given a range of hyphenated values, this function will randomly chose within the alotted range
+    def _PullIntIDRange(self, idStr:str) -> tuple[int, int]:
+        idNumRange:str = idStr[1:]
+
+        if(len(idNumRange) == 1): return int(idNumRange)
+
+        idRange:list[int] = []
+        idRangeElements:list[chr] = []
+
+        for element in idNumRange:
+            if element.isdigit(): idRangeElements.append(str(element))
+            else:
+                value:int = int("".join(str(x) for x in idRangeElements))
+                idRange.append(value)
+                idRangeElements.clear()
+
+        if len(idRange) == 1: return idRange[0]
+        return random.randint(idRange[0], idRange[1])
+
+    def _MatchTypeAndID(self, logChrIDElement:chr, logNumIDElement:int) -> tuple[LogType, int]:
+        match logChrIDElement:
+            case 'a': return (LogType.ACCESS, logNumIDElement)
+            case 'b': return (LogType.SYSTEM, logNumIDElement)
+            case 'c': return (LogType.SECURITY, logNumIDElement)
+            case _: return ()
 
     def _GenLogID(self)-> Path:
         logFileName:str = f"{UTCTime.GetTime(True)}.txt"
         return(self._logPath / logFileName)
+
+
+
+
 
 
 ##* Device and Network Emulation
@@ -292,14 +389,8 @@ class NetworkManager:
         self._netLog = NetLogger()
 
     def SLogEm(self, maxSLogs:int = 100):
-        currentSLog:int = 0
-
-        while currentSLog < maxSLogs:
-            NetLogger.SetSLog(self._netLog, random.choice(list(LogStatus)), random.choice(self._devices), 
-                              random.choice(self._devices), random.choice(list(LogType)))
-            NetLogger.SLogIt(self._netLog)
-            currentSLog +=1
-
+        self._netLog.SLogIt(maxSLogs)
+        
     #if anomolous, add some other devices to the list for the netmanager to do stuff with
     def _InitDevices(self, numDevices:int = 4) -> list[Device]:
         possibleAddresses = tuple(self._netIP.hosts())
